@@ -2,18 +2,13 @@ name: Build qBittorrent Windows ARM64
 
 on:
   push:
-    branches: [ master, v5* ]
+    branches: [ master, main, 'v5*' ]
     tags: [ 'v*' ]
   pull_request:
     paths:
       - '.github/workflows/ci_mingw_arm64.yaml'
       - 'cmake/Toolchain-llvm-mingw.cmake'
   workflow_dispatch:
-    inputs:
-      qbt_version:
-        description: 'qBittorrent version to tag/display (default: 5.3.0)'
-        required: false
-        default: '5.3.0'
 
 permissions:
   contents: write
@@ -30,7 +25,7 @@ jobs:
       boost_path: "${{ github.workspace }}/boost"
       llvm_mingw_version: "20260616"
       libt_version: "2.0.15"
-      qbt_version: "${{ inputs.qbt_version || '5.3.0' }}"
+      qbt_version: "5.3.0"
       qt_version: "6.12.0"
       zlib_version: "1.3.2"
       boost_version: "1.92.0"
@@ -49,13 +44,6 @@ jobs:
             pkg-config autoconf automake autoconf-archive make \
             texlive-binaries texinfo bison flex m4 libtool
 
-      - name: Cache dependencies (Qt, Libtorrent, zlib, OpenSSL)
-        id: cache-deps
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.library_path }}
-          key: mingw-arm64-deps-qt${{ env.qt_version }}-libt${{ env.libt_version }}-boost${{ env.boost_version }}-llvm${{ env.llvm_mingw_version }}
-
       - name: Download and install llvm-mingw toolchain
         run: |
           aria2c "https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.llvm_mingw_version }}/llvm-mingw-${{ env.llvm_mingw_version }}-ucrt-ubuntu-22.04-x86_64.tar.xz"
@@ -72,8 +60,7 @@ jobs:
           rm "boost.7z"
           mv "${{ github.workspace }}/boost_${boost_file_slug}" "${{ env.boost_path }}"
 
-      - name: Install host Qt 6 (tools: moc, rcc, uic)
-        if: steps.cache-deps.outputs.cache-hit != 'true'
+      - name: Install host Qt 6 tools
         uses: jurplel/install-qt-action@v4
         with:
           aqtversion: '==3.1.*'
@@ -83,32 +70,31 @@ jobs:
           arch: 'linux_gcc_64'
 
       - name: Setup vcpkg and install OpenSSL
-        if: steps.cache-deps.outputs.cache-hit != 'true'
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: '9e593bb18ea69cc5095e012465dcd675a822ed0d'
 
       - name: Build static OpenSSL with vcpkg
-        if: steps.cache-deps.outputs.cache-hit != 'true'
         run: |
+          export PATH="${{ env.llvm_path }}/bin:$PATH"
           cd ${{ env.RUNVCPKG_VCPKG_ROOT }}
           echo "set(VCPKG_BUILD_TYPE release)" >> triplets/community/arm64-mingw-static.cmake
           ./vcpkg upgrade
           ./vcpkg install openssl --triplet arm64-mingw-static --clean-after-build
 
       - name: Build static zlib for ARM64
-        if: steps.cache-deps.outputs.cache-hit != 'true'
         run: |
           TARGET=aarch64-w64-mingw32
+          export PATH="${{ env.llvm_path }}/bin:$PATH"
           git clone https://github.com/madler/zlib.git --depth 1 --branch v${{ env.zlib_version }}
           cd zlib
           CC=$TARGET-gcc AR=$TARGET-ar RANLIB=$TARGET-ranlib ./configure --prefix="${{ env.library_path }}/zlib" --static
           make -j$(nproc)
           make install
 
-      - name: Build static Qt 6 (target Windows ARM64)
-        if: steps.cache-deps.outputs.cache-hit != 'true'
+      - name: Build static Qt 6 for Windows ARM64
         run: |
+          export PATH="${{ env.llvm_path }}/bin:$PATH"
           git clone https://github.com/qt/qt5.git qt6
           cd qt6
           git checkout "v${{ env.qt_version }}"
@@ -126,9 +112,9 @@ jobs:
           cmake --build . --parallel $(nproc)
           cmake --install .
 
-      - name: Build static libtorrent for ARM64
-        if: steps.cache-deps.outputs.cache-hit != 'true'
+      - name: Build static libtorrent for Windows ARM64
         run: |
+          export PATH="${{ env.llvm_path }}/bin:$PATH"
           git clone \
             --branch v${{ env.libt_version }} \
             --depth 1 \
@@ -154,14 +140,13 @@ jobs:
 
       - name: Build qBittorrent for Windows ARM64
         run: |
-          export PATH="${{ env.qt_path }}/bin:$PATH"
-          
-          # Check whether we build from current repository or download specified tarball
+          export PATH="${{ env.qt_path }}/bin:${{ env.llvm_path }}/bin:$PATH"
+
           if [ -f "${{ github.workspace }}/src/app/main.cpp" ]; then
-            echo "Building from checked-out workspace repository..."
+            echo "Building from workspace checkout..."
             qbt_src_dir="${{ github.workspace }}"
           else
-            echo "Downloading qBittorrent ${{ env.qbt_version }} source archive..."
+            echo "Downloading qBittorrent source..."
             aria2c "https://sourceforge.net/projects/qbittorrent/files/qbittorrent/qbittorrent-${{ env.qbt_version }}/qbittorrent-${{ env.qbt_version }}.tar.xz"
             tar -xf "qbittorrent-${{ env.qbt_version }}.tar.xz"
             qbt_src_dir="${{ github.workspace }}/qbittorrent-${{ env.qbt_version }}"
